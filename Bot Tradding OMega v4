@@ -1,0 +1,503 @@
+#!/usr/bin/env python3
+"""
+TradingBotV3_Improved – Bot de trading asynchrone amélioré
+------------------------------------------------------------
+Cette version intègre :
+ • Lecture et fusion de la configuration via fichier JSON et variables d'environnement.
+ • Support de plusieurs paires (BTCUSDT, ETHUSDT, BNBUSDT, ADAUSDT, SOLUSDT, XRPUSDT).
+ • Architecture asynchrone avec gestion des signaux pour un arrêt en douceur.
+ • Stratégies modulaires : Exemple de stratégie RSI simple et RSI+ATR pour gestion du risque.
+ • Journalisation des trades dans une base SQLite et export en CSV lors de l’arrêt.
+ • Notifications Telegram pour le suivi en temps réel.
+
+Auteur  : Matthieu Ouvrard
+Date    : 2025-04-10
+"""
+
+import os
+import time
+import json
+import signal
+import asyncio
+import logging
+import sqlite3
+from datetime import datetime
+
+from tenacity import retry, stop_after_attempt, wait_exponential
+import telegram
+from binance.client import Client
+from binance.exceptions import BinanceAPIException
+import pandas as pd
+
+# Indicateurs techniques
+from ta.momentum import RSIIndicator
+from ta.volatility import AverageTrueRange
+from abc import ABC, abstractmethod
+
+# =============================================================================
+# CONFIGURATION ET INITIALISATION DU LOGGER
+# =============================================================================
+
+# Configuration par défaut intégrant plusieurs paires
+DEFAULT_CONFIG = {
+    "BINANCE_API_KEY": "",
+    "BINANCE_API_SECRET": "",
+    "TELEGRAM_TOKEN": "",
+    "TELEGRAM_CHAT_ID": "",
+    "USE_TESTNET": True,
+    "TRADING_CONFIG": {
+        "BTCUSDT": {"rsi_buy": 30, "rsi_sell": 70, "amount": 50},
+        "ETHUSDT": {"rsi_buy": 32, "rsi_sell": 68, "amount": 40},
+        "BNBUSDT": {"rsi_buy": 33, "rsi_sell": 67, "amount": 30},
+        "ADAUSDT": {"rsi_buy": 35, "rsi_sell": 65, "amount": 25},
+        "SOLUSDT": {"rsi_buy": 30, "rsi_sell": 70, "amount": 20},
+        "XRPUSDT": {"rsi_buy": 34, "rsi_sell": 66, "amount": 15}
+    },
+    "RSI_PERIOD": 14,
+    "ATR_PERIOD": 14,
+    "ATR_SL_MULTIPLIER": 1.5,
+    "ATR_TP_MULTIPLIER": 2,
+    "INTERVAL": "1h",
+    "REFRESH_INTERVAL": 60 * 60,  # 1 heure en secondes
+    "DB_FILE": "trades_v3_improved.db",
+    "EXPORT_CSV": "trades_export_v3_improved.csv"
+}
+
+def load_config():
+    """
+    Charge la configuration par défaut et la fusionne avec les éventuelles surcharges
+    du fichier config.json.
+    """
+    config = DEFAULT_CONFIG.copy()
+    config_file = "config.json"
+    if os.path.exists(config_file):
+        try:
+            with open(config_file, "r") as f:
+                file_config = json.load(f)
+                config.update(file_config)
+                logger.info("Configuration chargée depuis %s", config_file)
+        except Exception as e:
+            logger.error("Erreur lors de la lecture de %s : %s", config_file, e)
+    return config
+
+# Configuration du logger : affichage sur console et fichier
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    handlers=[logging.StreamHandler(), logging.FileHandler("tradingbot_v3_improved.log")]
+)
+logger = logging.getLogger("TradingBotV3_Improved")
+
+# Charger et fusionner la configuration
+config = load_config()
+
+# Récupération des clés API et tokens par priorité : variables d'environnement puis config
+BINANCE_API_KEY    = os.getenv("BINANCE_API_KEY")    or config["BINANCE_API_KEY"]
+BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET") or config["BINANCE_API_SECRET"]
+TELEGRAM_TOKEN     = os.getenv("TELEGRAM_TOKEN")     or config["TELEGRAM_TOKEN"]
+TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID")   or config["TELEGRAM_CHAT_ID"]
+USE_TESTNET        = config["USE_TESTNET"]
+
+TRADING_CONFIG     = config["TRADING_CONFIG"]
+RSI_PERIOD         = config["RSI_PERIOD"]
+ATR_PERIOD         = config["ATR_PERIOD"]
+ATR_SL_MULTIPLIER  = config["ATR_SL_MULTIPLIER"]
+ATR_TP_MULTIPLIER  = config["ATR_TP_MULTIPLIER"]
+# L'intervalle de trading est défini par l'API Binance
+INTERVAL           = Client.KLINE_INTERVAL_1H  
+REFRESH_INTERVAL   = config["REFRESH_INTERVAL"]
+DB_FILE            = config["DB_FILE"]
+EXPORT_CSV         = config["EXPORT_CSV"]
+
+# Vérification des clés et tokens indispensables
+if not all([BINANCE_API_KEY, BINANCE_API_SECRET, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID]):
+    logger.error("Les clés API Binance ou les tokens Telegram ne sont pas définis.")
+    exit(1)
+
+# =============================================================================
+# INITIALISATION DES CLIENTS API : Binance et Telegram
+# =============================================================================
+
+client = Client(BINANCE_API_KEY, BINANCE_API_SECRET)
+if USE_TESTNET:
+    client.API_URL = 'https://testnet.binance.vision/api'
+logger.info("Connecté à Binance (Testnet = %s)", USE_TESTNET)
+
+bot_telegram = telegram.Bot(token=TELEGRAM_TOKEN)
+
+# =============================================================================
+# BASE DE DONNÉES SQLITE POUR LA JOURNALISATION DES TRADES
+# =============================================================================
+
+def init_db(db_file: str):
+    """
+    Initialise la base SQLite pour journaliser les trades.
+    """
+    try:
+        with sqlite3.connect(db_file) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS trades (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    symbol TEXT,
+                    side TEXT,
+                    amount REAL,
+                    price REAL,
+                    rsi REAL,
+                    timestamp TEXT
+                )
+            ''')
+            conn.commit()
+        logger.info("Base de données '%s' initialisée", db_file)
+    except Exception as e:
+        logger.exception("Erreur d'initialisation de la base de données : %s", e)
+
+def log_trade(symbol, side, amount, price, rsi):
+    """
+    Insère un trade dans la base de données.
+    """
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO trades (symbol, side, amount, price, rsi, timestamp)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (symbol, side, amount, price, rsi, time.strftime("%Y-%m-%d %H:%M:%S")))
+            conn.commit()
+    except Exception as e:
+        logger.exception("Erreur lors de l'insertion d'un trade : %s", e)
+
+# Initialiser la BDD
+init_db(DB_FILE)
+
+# =============================================================================
+# FONCTIONS UTILES : Récupération des données et calculs d'indicateurs
+# =============================================================================
+
+@retry(stop=stop_after_attempt(5), wait=wait_exponential(min=1, max=30))
+def fetch_market_data(symbol: str, interval: str, limit: int = 100) -> pd.DataFrame:
+    """
+    Récupère les données de marché (OHLCV) depuis l'API Binance.
+    """
+    try:
+        data = client.get_klines(symbol=symbol, interval=interval, limit=limit)
+    except Exception as e:
+        logger.exception("Erreur lors de la récupération des données pour %s : %s", symbol, e)
+        raise e
+    cols = ["timestamp", "open", "high", "low", "close", "volume"] + [f"col{i}" for i in range(6)]
+    df = pd.DataFrame(data, columns=cols)
+    for col in ["close", "high", "low"]:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+    return df
+
+def compute_rsi(close_prices: pd.Series, window: int = RSI_PERIOD) -> float:
+    """
+    Calcule le RSI à partir d'une série de prix de clôture.
+    """
+    return RSIIndicator(close_prices, window=window).rsi().iloc[-1]
+
+def compute_atr(df: pd.DataFrame, period: int = ATR_PERIOD) -> float:
+    """
+    Calcule l'Average True Range (ATR) pour gérer le risque.
+    """
+    atr = AverageTrueRange(df["high"], df["low"], df["close"], window=period)
+    return atr.average_true_range().iloc[-1]
+
+def send_telegram_notification(message: str):
+    """
+    Envoie une notification Telegram.
+    """
+    try:
+        bot_telegram.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+        logger.info("Notification Telegram envoyée : %s", message)
+    except Exception as e:
+        logger.exception("Erreur lors de l'envoi de la notification Telegram : %s", e)
+
+def execute_order(symbol: str, side: str, amount: float, price: float, rsi: float) -> dict:
+    """
+    Exécute un ordre de marché sur Binance, notifie via Telegram et journalise le trade.
+    """
+    try:
+        if side == "buy":
+            order = client.order_market_buy(symbol=symbol, quoteOrderQty=amount)
+        else:
+            order = client.order_market_sell(symbol=symbol, quoteOrderQty=amount)
+        message = (
+            f"🚀 Ordre {side.upper()} sur {symbol}\n"
+            f"Montant : {amount} USDT\n"
+            f"Prix : {price:.2f} USDT\n"
+            f"RSI : {rsi:.2f}\n"
+            f"Time : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+        send_telegram_notification(message)
+        logger.info(message)
+        log_trade(symbol, side, amount, price, rsi)
+        return order
+    except BinanceAPIException as e:
+        logger.exception("Erreur Binance lors de l'exécution de l'ordre %s sur %s : %s", side, symbol, e)
+        send_telegram_notification(f"❌ Erreur Binance {side} {symbol} : {e}")
+        return {}
+
+def place_stop_loss_and_take_profit(symbol: str, qty: float, entry_price: float, atr: float):
+    """
+    Place simultanément un ordre STOP-LOSS et un TAKE-PROFIT basés sur l'ATR.
+    """
+    sl_price = round(entry_price - atr * ATR_SL_MULTIPLIER, 2)
+    tp_price = round(entry_price + atr * ATR_TP_MULTIPLIER, 2)
+    try:
+        # Placement de l'ordre STOP-LOSS
+        client.create_order(
+            symbol=symbol,
+            side=Client.SIDE_SELL,
+            type="STOP_LOSS_LIMIT",
+            quantity=qty,
+            price=str(sl_price),
+            stopPrice=str(round(sl_price * 1.001, 2)),
+            timeInForce="GTC"
+        )
+        logger.info("🔻 STOP-LOSS placé pour %s à %s", symbol, sl_price)
+        # Placement de l'ordre TAKE-PROFIT
+        client.create_order(
+            symbol=symbol,
+            side=Client.SIDE_SELL,
+            type="LIMIT",
+            quantity=qty,
+            price=str(tp_price),
+            timeInForce="GTC"
+        )
+        logger.info("🎯 TAKE-PROFIT placé pour %s à %s", symbol, tp_price)
+    except BinanceAPIException as e:
+        logger.exception("Erreur lors du placement des ordres SL/TP pour %s : %s", symbol, e)
+        send_telegram_notification(f"❌ Erreur SL/TP pour {symbol} : {e}")
+
+# =============================================================================
+# GESTION DES POSITIONS (Évite les ordres redondants)
+# =============================================================================
+
+class PositionManager:
+    """
+    Gestionnaire de positions pour suivre les trades ouverts par symbole.
+    """
+    def __init__(self):
+        self.positions = {}
+
+    def open_position(self, symbol: str, order_details: dict):
+        self.positions[symbol] = order_details
+        logger.info("Position ouverte pour %s : %s", symbol, order_details)
+
+    def close_position(self, symbol: str):
+        if symbol in self.positions:
+            logger.info("Position fermée pour %s : %s", symbol, self.positions[symbol])
+            del self.positions[symbol]
+
+    def is_open(self, symbol: str) -> bool:
+        return symbol in self.positions
+
+# Instance globale du gestionnaire de positions
+position_manager = PositionManager()
+
+# =============================================================================
+# STRATÉGIES MODULAIRES
+# =============================================================================
+
+class BaseStrategy(ABC):
+    """
+    Classe de base pour définir une stratégie de trading.
+    """
+    @abstractmethod
+    def get_signal(self, df: pd.DataFrame) -> str:
+        """
+        Analyse la DataFrame pour retourner un signal :
+          "buy", "sell" ou "hold".
+        """
+        pass
+
+class RSIOnlyStrategy(BaseStrategy):
+    """
+    Stratégie simple basée uniquement sur le RSI.
+    """
+    def __init__(self, rsi_buy: float, rsi_sell: float, rsi_period: int = RSI_PERIOD):
+        self.rsi_buy = rsi_buy
+        self.rsi_sell = rsi_sell
+        self.rsi_period = rsi_period
+
+    def get_signal(self, df: pd.DataFrame) -> str:
+        if df.empty or len(df) < self.rsi_period:
+            return "hold"
+        rsi_value = compute_rsi(df["close"], window=self.rsi_period)
+        if rsi_value <= self.rsi_buy:
+            return "buy"
+        elif rsi_value >= self.rsi_sell:
+            return "sell"
+        else:
+            return "hold"
+
+class RSI_ATR_Strategy(BaseStrategy):
+    """
+    Stratégie combinant RSI pour déterminer l'entrée et ATR pour gérer le risque.
+    Elle retourne le signal et peut être étendue pour inclure le placement de SL/TP.
+    """
+    def __init__(self, rsi_buy: float, rsi_sell: float, rsi_period: int = RSI_PERIOD, atr_period: int = ATR_PERIOD):
+        self.rsi_buy = rsi_buy
+        self.rsi_sell = rsi_sell
+        self.rsi_period = rsi_period
+        self.atr_period = atr_period
+
+    def get_signal(self, df: pd.DataFrame) -> str:
+        if df.empty or len(df) < self.rsi_period:
+            return "hold"
+        rsi_value = compute_rsi(df["close"], window=self.rsi_period)
+        if rsi_value <= self.rsi_buy:
+            return "buy"
+        elif rsi_value >= self.rsi_sell:
+            return "sell"
+        else:
+            return "hold"
+
+# =============================================================================
+# FONCTION ASYNCHRONE DE TRADING POUR CHAQUE SYMBOLE
+# =============================================================================
+
+async def trade_symbol(symbol: str, cfg: dict, strategy: BaseStrategy = None):
+    """
+    Boucle de trading pour un symbole donné :
+      - Récupère les données de marché.
+      - Calcule les indicateurs.
+      - Décide d'acheter ou de vendre selon la stratégie.
+      - Exécute les ordres et gère les positions.
+    """
+    while True:
+        try:
+            df = fetch_market_data(symbol, INTERVAL)
+            if df.empty:
+                logger.warning("Aucune donnée reçue pour %s", symbol)
+                await asyncio.sleep(REFRESH_INTERVAL)
+                continue
+
+            price = df["close"].iloc[-1]
+            current_rsi = compute_rsi(df["close"], window=RSI_PERIOD)
+            logger.info("%s | Prix : %.2f | RSI : %.2f", symbol, price, current_rsi)
+
+            # Si une stratégie est fournie, utilisez-la pour obtenir un signal
+            if strategy is not None:
+                signal_result = strategy.get_signal(df)
+            else:
+                # Par défaut, utilisation d'une stratégie d'achat sur RSI bas
+                signal_result = "buy" if current_rsi <= cfg["rsi_buy"] else ("sell" if current_rsi >= cfg["rsi_sell"] else "hold")
+
+            # Gestion des signaux d'achat et de vente
+            if signal_result == "buy" and not position_manager.is_open(symbol):
+                order = execute_order(symbol, "buy", cfg["amount"], price, current_rsi)
+                # Vérification de l'exécution (notamment via le champ "executedQty")
+                if order and order.get("executedQty"):
+                    position_manager.open_position(symbol, order)
+                    # Si la stratégie utilise l'ATR pour la gestion du risque, placer SL/TP
+                    atr_value = compute_atr(df, period=ATR_PERIOD)
+                    place_stop_loss_and_take_profit(symbol, qty=order["executedQty"], entry_price=price, atr=atr_value)
+            elif signal_result == "sell" and position_manager.is_open(symbol):
+                order = execute_order(symbol, "sell", cfg["amount"], price, current_rsi)
+                if order:
+                    position_manager.close_position(symbol)
+
+        except Exception as e:
+            logger.exception("Erreur lors du trading pour %s : %s", symbol, e)
+        await asyncio.sleep(REFRESH_INTERVAL)
+
+# =============================================================================
+# EXPORT DES TRADES EN CSV (lors de l'arrêt)
+# =============================================================================
+
+def export_trades_to_csv(db_file: str, output_file: str):
+    """
+    Exporte les trades enregistrés dans la base SQLite vers un fichier CSV.
+    """
+    try:
+        with sqlite3.connect(db_file) as conn:
+            df = pd.read_sql_query("SELECT * FROM trades", conn)
+        df.to_csv(output_file, index=False)
+        logger.info("Historique exporté vers %s", output_file)
+    except Exception as e:
+        logger.exception("Erreur lors de l'exportation des trades : %s", e)
+
+# =============================================================================
+# CLASSE PRINCIPALE : TRADING BOT
+# =============================================================================
+
+class TradingBot:
+    """
+    Bot de trading asynchrone gérant le démarrage et l'arrêt des tâches par symbole.
+    """
+    def __init__(self, trading_config: dict, strategy: BaseStrategy = None):
+        self.trading_config = trading_config
+        self.strategy = strategy
+        self.tasks = []
+
+    async def start_trading(self):
+        """
+        Démarre une tâche asynchrone pour chaque symbole configuré.
+        """
+        for symbol, cfg in self.trading_config.items():
+            logger.info("Démarrage du trading pour %s", symbol)
+            task = asyncio.create_task(trade_symbol(symbol, cfg, strategy=self.strategy))
+            self.tasks.append(task)
+        await asyncio.gather(*self.tasks)
+
+    async def shutdown(self):
+        """
+        Arrête toutes les tâches et exporte l'historique des trades.
+        """
+        logger.info("Arrêt du bot, annulation des tâches...")
+        for task in self.tasks:
+            task.cancel()
+        await asyncio.gather(*self.tasks, return_exceptions=True)
+        export_trades_to_csv(DB_FILE, EXPORT_CSV)
+        logger.info("Shutdown complet.")
+
+# =============================================================================
+# GESTION DES SIGNAUX D'ARRÊT
+# =============================================================================
+
+def ask_exit(signame, loop, bot: TradingBot):
+    """
+    Gestionnaire de signal d'arrêt pour lancer l'arrêt gracieux du bot.
+    """
+    logger.info("Signal %s reçu, préparation de l'arrêt.", signame)
+    asyncio.create_task(bot.shutdown())
+
+# =============================================================================
+# POINT D'ENTRÉE ASYNCHRONE
+# =============================================================================
+
+async def main():
+    # Choix de la stratégie
+    # Vous pouvez choisir entre RSIOnlyStrategy et RSI_ATR_Strategy
+    strategy = RSI_ATR_Strategy(
+        rsi_buy=TRADING_CONFIG["BTCUSDT"]["rsi_buy"],
+        rsi_sell=TRADING_CONFIG["BTCUSDT"]["rsi_sell"],
+        rsi_period=RSI_PERIOD,
+        atr_period=ATR_PERIOD
+    )
+    # Pour utiliser la stratégie simple, décommentez la ligne suivante :
+    # strategy = RSIOnlyStrategy(
+    #     rsi_buy=TRADING_CONFIG["BTCUSDT"]["rsi_buy"],
+    #     rsi_sell=TRADING_CONFIG["BTCUSDT"]["rsi_sell"],
+    #     rsi_period=RSI_PERIOD
+    # )
+
+    bot = TradingBot(TRADING_CONFIG, strategy=strategy)
+    loop = asyncio.get_running_loop()
+    for signame in {"SIGINT", "SIGTERM"}:
+        loop.add_signal_handler(getattr(signal, signame), lambda s=signame: ask_exit(s, loop, bot))
+    try:
+        await bot.start_trading()
+    except asyncio.CancelledError:
+        logger.info("Tâches de trading annulées.")
+    except Exception as e:
+        logger.exception("Erreur principale : %s", e)
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Arrêt manuel du bot.")

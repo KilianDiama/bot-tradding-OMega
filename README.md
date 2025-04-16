@@ -1,108 +1,71 @@
-# 🤖 Bot Trading OMega V4
+# 📈 Bot Trading Omega
 
-**Bot de trading asynchrone multi-paires avec stratégie RSI/ATR, notifications Telegram et journalisation automatique.**
-
-> ⚠️ Projet à usage éducatif. Toute utilisation commerciale sans accord explicite est strictement interdite. Voir [LICENSE](./LICENSE) pour plus d'informations.
-
----
-
-## 🔍 Aperçu
-
-Ce bot permet de :
-- 📈 Trader automatiquement plusieurs paires crypto via l’API Binance.
-- 🧠 Appliquer des stratégies RSI simples ou combinées avec ATR.
-- 💬 Recevoir des notifications Telegram en temps réel.
-- 🧾 Journaliser les trades dans une base SQLite.
-- 📊 Exporter l’historique des transactions en CSV.
-- ⏱ Fonctionner de façon 100% asynchrone pour une gestion fluide des paires.
+**Bot Trading Omega** est un bot de trading algorithmique qui exécute des ordres d’achat et de vente automatiquement sur les marchés financiers selon des stratégies définies.  
+Pensé pour l'efficacité, conçu pour l’expérimentation.
 
 ---
 
-## ⚙️ Technologies
+## 🧠 À propos
 
-- `Python 3.8+`
-- `asyncio`
-- `ta` (technical analysis)
-- `Binance API`
-- `telegram`
-- `Stable logging & DB via SQLite`
-- `Tenacity` (retries)
-- `Pandas` pour le traitement des données
+Ce projet a pour but d'automatiser la prise de décision sur les marchés en exploitant des indicateurs techniques et des stratégies programmées.
+
+- 📊 Analyse de marché en temps réel
+- ⚙️ Déclenchement d’ordres simulés ou réels
+- 📈 Suivi des performances & journaux de trading
+- 🤖 Architecture modulaire pour intégrer facilement de nouvelles stratégies
 
 ---
 
-## 📦 Installation
+## ⚒️ Fonctionnalités
 
-1. **Clone le repo :**
+- 📉 Suivi de données boursières (ex: via API externe ou fichier)
+- 🔄 Détection automatique de signaux (croisements, RSI, MACD…)
+- 🛒 Simulation d’ordres d’achat/vente
+- 📁 Historique des transactions
+- 🔔 Alertes (console ou futur webhook)
+
+---
+
+## 💻 Technologies
+
+- Python
+- Pandas / NumPy
+- Matplotlib (pour analyse visuelle)
+- CSV / JSON pour les données
+- (API exchange à venir)
+
+---
+
+## ⚙️ Installation
 
 ```bash
-git clone https://github.com/tonpseudo/Bot-Trading-OMega-V4.git
-cd Bot-Trading-OMega-V4
-
-Installe les dépendances :
-
-bash
-Copier
-Modifier
+git clone https://github.com/KilianDiama/bot-tradding-OMega.git
+cd bot-tradding-OMega
 pip install -r requirements.txt
-Configure tes clés dans config.json :
-
-json
-Copier
-Modifier
-{
-  "BINANCE_API_KEY": "ta_clé",
-  "BINANCE_API_SECRET": "ton_secret",
-  "TELEGRAM_TOKEN": "token_bot",
-  "TELEGRAM_CHAT_ID": "id_du_chat"
-}
-Tu peux aussi utiliser des variables d’environnement.
-
-Lancer le bot 🚀 :
-
+▶️ Utilisation
 bash
 Copier
 Modifier
-python bot_omega_v4.py
-🔧 Personnalisation
-Tu peux choisir entre deux stratégies :
+python bot_omega.py
+Tu peux configurer ta stratégie ou tes seuils directement dans le script pour affiner le comportement du bot.
 
-RSIOnlyStrategy
+📊 Exemple (facultatif)
+Ajoute ici une capture ou un graphique d'évolution du portefeuille / de signaux générés.
 
-RSI_ATR_Strategy
+🔮 Prochaines étapes
+🔌 Connexion à une vraie API de trading (Binance, Alpaca…)
 
-Modifie les paramètres dans config.json :
+🧠 Intégration d’un modèle IA pour prédiction
 
-RSI d’achat/vente
+🛠️ Interface web (dashboard des trades)
 
-Paires à trader
+⚖️ Gestion des risques / position sizing
 
-Montants
+🛡️ Disclaimer
+Ce projet est expérimental. Il ne constitue en aucun cas un conseil en investissement. Utilisation à vos risques et périls.
 
-Fréquence de rafraîchissement
+📜 Licence
 
-🔐 Sécurité & API
-✅ Tu peux utiliser le testnet Binance pour éviter de risquer de l'argent réel.
-⚠️ Ne jamais commit tes clés API sur un dépôt public.
 
-📤 Exports
-À l’arrêt du bot :
-
-📁 Les trades sont exportés automatiquement dans trades_export_v3_improved.csv.
-
-🛡️ Licence
-
-Ce projet est protégé par une licence personnalisée :
-
-🔒 Usage commercial interdit sans autorisation.
-
-📚 Usage personnel et éducatif autorisé.
-
-✍️ Respect obligatoire de l’auteur (attribution).
-
-Voir LICENSE pour tous les détails.
-
-🙌 Remerciements
-Merci à la communauté Python, Binance, et aux contributeurs d’open-source.
-Ce projet est né d’une envie de créer un bot puissant, éthique, et transparent.
-
+✍️ Par Diamajax
+“Quand les autres dorment, ton bot trade. L’instinct, c’est bien. Le code, c’est mieux.” — Diamajax

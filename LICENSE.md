@@ -1,25 +1,22 @@
-© 2025 TonNom – Tous droits réservés.
+Diamajax License v1.0  
+© 2025 Matthieu Ouvrard (aka Diamajax)
 
-Licence Personnalisée "Creative Dev Guard" (v1.0)
+Ce logiciel, ses composants et ses dérivés sont protégés par la présente licence personnalisée.  
+Toute utilisation du code implique l'acceptation des conditions suivantes :
 
-Ce projet (code, structure, stratégies, commentaires et architecture) est publié à titre informatif, éducatif et de démonstration.
+1. 🔓 **Usage personnel et éducatif** — libre, sans restriction.  
+2. 🤝 **Usage open-source** — autorisé sous réserve de mention claire de l’auteur (“matthieu aka Diamajax”) dans le code, la documentation ou l’interface.
+3. 💼 **Usage commercial** — INTERDIT sans accord écrit explicite de l’auteur.  
+   → Pour toute demande commerciale, contactez : [diamajax@gmail.com].
 
-✅ Ce que TU PEUX faire :
-- Lire, étudier et exécuter ce projet pour ton apprentissage personnel.
-- T’inspirer de certaines idées, tant que tu ne copies pas le code tel quel.
-- Me mentionner et partager le dépôt original (forks bienvenus avec attribution).
+4. ✍️ **Modifications autorisées** — mais toute version dérivée doit **garder une mention visible** de l’auteur original.  
+5. 🛡️ **Aucune garantie** — ce logiciel est fourni “tel quel”, sans garantie d’usage, de sécurité ou de performance.
+6. 🧠 **Respect & reconnaissance** — si ce projet t’aide, mentionne l’auteur, partage le projet, et n'oublie pas : le savoir, ça se respecte.
 
-❌ Ce que TU NE PEUX PAS faire sans autorisation écrite explicite :
-- Utiliser ce projet dans un produit ou service commercial.
-- Le redistribuer, le modifier et le publier ailleurs sans attribution.
-- Copier, revendre, louer ou intégrer ce projet (en tout ou partie) dans une solution commerciale.
-- Supprimer ou modifier la présente licence ou les mentions d’auteur.
+---
 
-📬 Pour tout usage commercial, partenariat ou licence étendue : me contacter via GitHub, email ou Telegram.
+✅ Tu veux l’utiliser ? Tu peux.  
+💰 Tu veux en faire du business ? Tu me parles d’abord.  
+🚫 Tu veux voler le taf sans crédit ? T’as rien compris à l’open source.
 
-Ce projet est une œuvre originale, protégée par le droit d’auteur. Toute infraction pourra donner lieu à des poursuites.
-
-Merci de respecter le travail et l’intention de partage de ce projet ✊
-
-TonNom
-2025
+#DiamajaxLicense #RespectDuCode #OpenButFair
